@@ -5,6 +5,10 @@ from textual import events
 from fieldkit_data import FieldKitData
 from datetime import datetime
 import math
+import json
+import os
+import subprocess
+import threading
 
 CSS = """
 Screen {
@@ -62,78 +66,17 @@ Screen {
 
 MODES = {1: "RECON", 2: "SDR", 3: "MESH", 4: "PENTEST", 5: "AIRSPACE", 6: "SYSTEM"}
 W = 74
+DATA_FILE = os.path.expanduser("~/fieldkit_live.json")
 
 def bar(val, lo, hi, width=20, unit=""):
     pct = min(1.0, max(0.0, (val - lo) / (hi - lo)))
     f = int(pct * width)
     return f"[{'█'*f}{'░'*(width-f)}] {val:.1f}{unit}"
 
-def threat_color(level):
+def threat_icon(level):
     return {"LOW": "◆", "MEDIUM": "▲", "HIGH": "!!"}.get(level, "?")
 
-def ascii_radar(aircraft, drones, radius=18, width=40, height=20):
-    grid = [[" " for _ in range(width*2)] for _ in range(height)]
-    cx, cy = width, height // 2
-
-    for r_pct in [0.33, 0.66, 1.0]:
-        r = int(radius * r_pct)
-        for angle in range(0, 360, 3):
-            rad = math.radians(angle)
-            x = int(cx + r * math.sin(rad))
-            y = int(cy - int(r * 0.45 * math.cos(rad)))
-            if 0 <= y < height and 0 <= x < width*2:
-                grid[y][x] = "·"
-
-    for angle in range(0, 360, 90):
-        rad = math.radians(angle)
-        for step in range(1, radius+1):
-            x = int(cx + step * math.sin(rad))
-            y = int(cy - int(step * 0.45 * math.cos(rad)))
-            if 0 <= y < height and 0 <= x < width*2:
-                grid[y][x] = "·"
-
-    if 0 <= cy < height:
-        grid[cy][cx] = "+"
-    if cy-1 >= 0 and cx < width*2:
-        grid[cy-1][cx-1] = "N"
-    if cy+1 < height and cx < width*2:
-        grid[cy+1][cx-1] = "S"
-    if cy < height and cx-radius-1 >= 0:
-        grid[cy][cx-radius-1] = "W"
-    if cy < height and cx+radius+1 < width*2:
-        grid[cy][cx+radius+1] = "E"
-
-    for a in aircraft:
-        bearing = random_bearing(a.get("callsign", ""))
-        dist_pct = min(1.0, a.get("distance", 100) / 250.0)
-        r = int(dist_pct * radius)
-        rad = math.radians(bearing)
-        x = int(cx + r * math.sin(rad))
-        y = int(cy - int(r * 0.45 * math.cos(rad)))
-        if 0 <= y < height and 0 <= x < width*2-1:
-            grid[y][x] = "✈"
-
-    for d in drones:
-        bearing = random_bearing(d.get("id", ""))
-        dist_pct = min(1.0, d.get("distance", 500) / 2000.0)
-        r = int(dist_pct * radius)
-        rad = math.radians(bearing)
-        x = int(cx + r * math.sin(rad))
-        y = int(cy - int(r * 0.45 * math.cos(rad)))
-        if 0 <= y < height and 0 <= x < width*2-1:
-            symbol = "!!" if d.get("threat") == "HIGH" else "◆"
-            grid[y][x] = symbol[0]
-
-    lines = []
-    for row in grid:
-        lines.append("  " + "".join(row))
-    return "\n".join(lines)
-
-def random_bearing(seed_str):
-    val = sum(ord(c) for c in seed_str) if seed_str else 0
-    return (val * 37) % 360
-
-def waterfall(hits, width=60, rows=5):
+def waterfall(hits, rows=5):
     freqs = [315.0, 350.0, 433.9, 500.0, 868.0, 915.0, 1090.0]
     lines = []
     header = "  "
@@ -141,7 +84,6 @@ def waterfall(hits, width=60, rows=5):
         header += f"{f:>7.1f} "
     lines.append(header)
     lines.append("  " + "─" * (len(freqs) * 9))
-
     for row in range(rows):
         line = "  "
         for f in freqs:
@@ -151,54 +93,50 @@ def waterfall(hits, width=60, rows=5):
                 intensity = min(1.0, max(0.0, (sig + 90) / 60))
                 chars = ["░", "▒", "▓", "█"]
                 char = chars[min(3, int(intensity * 4))]
-                if f == 1090.0 and matching:
+                if f == 1090.0:
                     char = "▲"
             else:
-                intensity = max(0, 0.15 - row * 0.03)
-                char = "░" if intensity > 0.05 else " "
+                char = "░" if row == 0 else " "
             line += f"   {char}{char}{char}    "
         lines.append(line)
-
     lines.append("  " + "─" * (len(freqs) * 9))
     return "\n".join(lines)
 
-def signal_compass(nodes, width=40, height=10):
-    cx, cy = width, height // 2
-    grid = [[" " for _ in range(width*2)] for _ in range(height)]
-
-    for r in [4, 8]:
-        for angle in range(0, 360, 5):
-            rad = math.radians(angle)
-            x = int(cx + r * 2 * math.sin(rad))
-            y = int(cy - int(r * math.cos(rad)))
-            if 0 <= y < height and 0 <= x < width*2:
-                grid[y][x] = "·"
-
-    if 0 <= cy < height:
-        grid[cy][cx] = "◉"
-
-    for i, node in enumerate(nodes):
-        bearing = (i * 120 + 45) % 360
-        rssi = node.get("rssi", -90)
-        dist = min(8, max(2, int(abs(rssi) / 12)))
-        rad = math.radians(bearing)
-        x = int(cx + dist * 2 * math.sin(rad))
-        y = int(cy - int(dist * math.cos(rad)))
-        if 0 <= y < height and 0 <= x < width*2-2:
-            label = node["id"][-2:]
-            grid[y][x] = "N"
-            if x+1 < width*2:
-                grid[y][x+1] = label[0] if label else "?"
-
-    lines = []
-    for row in grid:
-        lines.append("  " + "".join(row))
-    return "\n".join(lines)
+def export_live_json(d):
+    try:
+        payload = {
+            "timestamp": datetime.now().isoformat(),
+            "gps": {
+                "lat": d.gps.lat,
+                "lon": d.gps.lon,
+                "alt": d.gps.alt,
+                "speed": d.gps.speed,
+                "fix": d.gps.fix,
+                "satellites": d.gps.satellites
+            },
+            "aircraft": d.sdr.aircraft,
+            "drones": d.drone.drones,
+            "wifi": d.wifi.networks,
+            "rf_hits": d.sdr.hits,
+            "lora_nodes": d.lora.nodes,
+            "lora_messages": d.lora.messages,
+            "system": {
+                "cpu": d.system.cpu,
+                "ram_used": d.system.ram_used,
+                "temp": d.system.temp,
+                "battery": d.system.battery,
+                "uptime": d.system.uptime
+            }
+        }
+        with open(DATA_FILE, "w") as f:
+            json.dump(payload, f)
+    except:
+        pass
 
 class FieldKit(App):
     CSS = CSS
     current_mode = 1
-    sweep_angle = 0
+    map_open = False
 
     def __init__(self):
         super().__init__()
@@ -229,8 +167,18 @@ class FieldKit(App):
 
     def tick(self):
         self.data.update()
-        self.sweep_angle = (self.sweep_angle + 15) % 360
+        export_live_json(self.data)
         self.refresh_ui()
+
+    def open_map(self):
+        def run():
+            subprocess.Popen(
+                ["python3", os.path.expanduser("~/fieldkit/fieldkit_map.py")],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        threading.Thread(target=run, daemon=True).start()
+        self.map_open = True
 
     def refresh_ui(self):
         d = self.data
@@ -239,8 +187,9 @@ class FieldKit(App):
         gps_s = "GPS:LOCK" if d.gps.fix == "3D" else "GPS:ACQ"
         drone_alert = " !!DRONE!!" if any(dr["threat"] in ["MEDIUM","HIGH"] for dr in d.drone.drones) else ""
         open_alert = " !!OPEN NET!!" if any(n["enc"]=="OPEN" for n in d.wifi.networks) else ""
+        map_status = " [M:MAP ON]" if self.map_open else " [M:MAP]"
         self.query_one("#status_bar", Label).update(
-            f"{gps_s}  SDR:ON  {bat}  {now}{drone_alert}{open_alert} ")
+            f"{gps_s}  SDR:ON  {bat}  {now}{drone_alert}{open_alert}{map_status} ")
         self.query_one("#panel_content", Static).update(self.get_panel())
 
     def get_panel(self):
@@ -255,24 +204,22 @@ class FieldKit(App):
                 alerts += f"\n  !! {len(open_nets)} OPEN NETWORK(S) DETECTED !!"
             if high_drones:
                 alerts += f"\n  !! HIGH THREAT DRONE -- {high_drones[-1]['model']} !!"
-
-            radar = ascii_radar(d.sdr.aircraft, d.drone.drones)
-
-            summary = (
+            return (
                 f"\n"
                 f"  {'═'*W}\n"
-                f"  GPS: {d.gps.lat:.5f}  {d.gps.lon:.5f}  {d.gps.alt:.0f}m  SAT:{d.gps.satellites}  {d.gps.fix}\n"
+                f"  GPS: {d.gps.lat:.6f}  {d.gps.lon:.6f}  {d.gps.alt:.0f}m  SAT:{d.gps.satellites}  {d.gps.fix}\n"
                 f"  {'─'*W}\n"
-                f"  WIFI:{len(d.wifi.networks)}({sum(1 for n in d.wifi.networks if n['enc']=='OPEN')} open)  "
+                f"  WIFI:{len(d.wifi.networks)} ({sum(1 for n in d.wifi.networks if n['enc']=='OPEN')} open)  "
                 f"SDR:{len(d.sdr.hits)} hits  "
                 f"AIRCRAFT:{len(d.sdr.aircraft)}  "
                 f"DRONES:{len(d.drone.drones)}  "
                 f"LORA:{len(d.lora.nodes)} nodes\n"
                 f"  {'═'*W}\n"
-                f"  RADAR  [◆=drone  ✈=aircraft  ·=range rings  +=you]\n"
-                f"  {'─'*W}\n"
+                f"  LIVE MAP  --  press M to open satellite map in browser\n"
+                f"  DATA  --  {DATA_FILE}\n"
+                f"  {'═'*W}\n"
+                f"  STATUS   ALL SYSTEMS NOMINAL{alerts}"
             )
-            return summary + radar + f"\n  {'═'*W}\n  STATUS  ALL SYSTEMS NOMINAL{alerts}"
 
         elif m == 2:
             wf = waterfall(d.sdr.hits)
@@ -306,23 +253,18 @@ class FieldKit(App):
             )
 
         elif m == 3:
-            compass = signal_compass(d.lora.nodes)
             nodes = ""
             for n in d.lora.nodes:
                 nodes += f"  {n['id']:<12} {bar(n['rssi'],-120,-60,15,'dBm')}  BAT:{n['bat']}%  {n['temp']}c\n"
             msgs = ""
-            for msg in d.lora.messages[-6:]:
+            for msg in d.lora.messages[-8:]:
                 msgs += f"  [{msg['timestamp']}] {msg['node']:<10} {msg['text']}\n"
             if not msgs:
                 msgs = "  no messages\n"
             return (
                 f"\n"
                 f"  {'═'*W}\n"
-                f"  LORA MESH  {d.lora.frequency}MHz  {len(d.lora.nodes)} nodes  {len(d.lora.messages)} messages\n"
-                f"  {'═'*W}\n"
-                f"  NODE COMPASS  [◉=you  N=node]\n"
-                f"  {'─'*W}\n"
-                f"{compass}\n"
+                f"  LORA MESH  {d.lora.frequency}MHz  {len(d.lora.nodes)} nodes  {len(d.lora.messages)} msgs\n"
                 f"  {'═'*W}\n"
                 f"  NODE STATUS\n"
                 f"  {'─'*W}\n"
@@ -337,25 +279,21 @@ class FieldKit(App):
             nets = ""
             for n in d.wifi.networks:
                 flag = " !! OPEN !!" if n["enc"] == "OPEN" else ""
-                sig_bar = bar(n['signal'], -100, -30, 15, 'dBm')
-                nets += f"  {n['ssid']:<26} {n['enc']:<5} ch{n['ch']:<3} {sig_bar}{flag}\n"
-
-            net_chart = ""
-            net_chart += "  SIGNAL STRENGTH\n  "
+                nets += f"  {n['ssid']:<26} {n['enc']:<5} ch{n['ch']:<3} {bar(n['signal'],-100,-30,15,'dBm')}{flag}\n"
+            net_chart = "  SIGNAL LEVELS\n  "
             for n in d.wifi.networks:
                 pct = min(1.0, max(0.0, (n['signal'] + 100) / 70))
-                h = int(pct * 6)
-                net_chart += f" {'█'*h}{'░'*(6-h)} "
+                h = int(pct * 8)
+                net_chart += f" {'█'*h}{'░'*(8-h)} "
             net_chart += "\n  "
             for n in d.wifi.networks:
-                label = n['ssid'][:6]
-                net_chart += f" {label:<8}"
-
+                net_chart += f" {n['ssid'][:7]:<9}"
             hs = "  no handshakes captured\n" if not d.wifi.handshakes else ""
             return (
                 f"\n"
                 f"  {'═'*W}\n"
-                f"  WIFI PENTEST  {d.wifi.interface} [{d.wifi.mode}]  GPS:{d.gps.lat:.5f},{d.gps.lon:.5f}\n"
+                f"  WIFI PENTEST  {d.wifi.interface} [{d.wifi.mode}]\n"
+                f"  GPS  {d.gps.lat:.6f}  {d.gps.lon:.6f}\n"
                 f"  {'═'*W}\n"
                 f"{net_chart}\n"
                 f"  {'─'*W}\n"
@@ -368,15 +306,15 @@ class FieldKit(App):
             )
 
         elif m == 5:
-            radar = ascii_radar(d.sdr.aircraft, d.drone.drones)
             drones = ""
-            for dr in d.drone.drones[-3:]:
-                icon = threat_color(dr["threat"])
-                drones += f"  {icon} {dr['id']:<10} {dr['model']:<18} {dr['alt']:>4.0f}m  {dr['distance']:>5.0f}m  {dr['method']}\n"
+            for dr in d.drone.drones[-4:]:
+                icon = threat_icon(dr["threat"])
+                drones += f"  {icon} {dr['id']:<10} {dr['model']:<18} {dr['alt']:>4.0f}m  {dr['distance']:>5.0f}m\n"
+                drones += f"    METHOD:{dr['method']:<20} THREAT:{dr['threat']}\n"
             if not drones:
                 drones = "  no drones detected\n"
             aircraft = ""
-            for a in d.sdr.aircraft[-3:]:
+            for a in d.sdr.aircraft[-4:]:
                 aircraft += f"  ✈ {a['callsign']:<10} {a['alt']:>6}ft  {a['speed']:>3}kts  {a['distance']:>6.1f}km\n"
             if not aircraft:
                 aircraft = "  no aircraft\n"
@@ -389,16 +327,17 @@ class FieldKit(App):
                 f"\n"
                 f"  {'═'*W}\n"
                 f"  AIRSPACE  DRONE-ID:ON  REMOTE-ID:ON  ADS-B:ON\n"
-                f"  {'─'*W}\n"
-                f"  [◆=drone LOW  ▲=MEDIUM  !!=HIGH  ✈=aircraft  +=you]\n"
-                f"{radar}\n"
+                f"  press M for live satellite map\n"
                 f"  {'═'*W}\n"
-                f"  DRONES ({len(d.drone.drones)})          AIRCRAFT ({len(d.sdr.aircraft)})\n"
+                f"  DRONES ({len(d.drone.drones)} detected)\n"
                 f"  {'─'*W}\n"
                 f"{drones}"
+                f"  {'═'*W}\n"
+                f"  AIRCRAFT ({len(d.sdr.aircraft)} detected)\n"
+                f"  {'─'*W}\n"
                 f"{aircraft}"
                 f"  {'═'*W}\n"
-                f"  ALERTS\n"
+                f"  THREAT ALERTS\n"
                 f"  {'─'*W}\n"
                 f"{alerts}"
             )
@@ -406,10 +345,9 @@ class FieldKit(App):
         elif m == 6:
             up = f"{d.system.uptime//3600:02d}:{(d.system.uptime%3600)//60:02d}:{d.system.uptime%60:02d}"
             cpu_h = int((d.system.cpu / 100) * 10)
-            ram_h = int(((d.system.ram_used/d.system.ram_total)) * 10)
-            temp_h = int(((d.system.temp-20) / 60) * 10)
+            ram_h = int((d.system.ram_used / d.system.ram_total) * 10)
+            temp_h = int(((d.system.temp - 20) / 60) * 10)
             bat_h = int((d.system.battery / 100) * 10)
-
             chart = "  CPU  RAM  TMP  BAT\n"
             for row in range(10, -1, -1):
                 line = "  "
@@ -422,7 +360,6 @@ class FieldKit(App):
                         line += "░░░  "
                 chart += line + "\n"
             chart += f"  {d.system.cpu:.0f}%   {(d.system.ram_used/d.system.ram_total*100):.0f}%   {d.system.temp:.0f}c   {d.system.battery:.0f}%\n"
-
             sdr = "[ON]" if d.system.sdr_on else "[OFF]"
             gps = "[ON]" if d.system.gps_on else "[OFF]"
             lora = "[ON]" if d.system.lora_on else "[OFF]"
@@ -440,6 +377,7 @@ class FieldKit(App):
                 f"  ADS-B:dump1090  RF:rtl_433  DRONE:DroneSecurity\n"
                 f"  WIFI:Kismet+aircrack  MESH:Meshtastic  GPS:gpsd\n"
                 f"  {'═'*W}\n"
+                f"  LIVE DATA  --  {DATA_FILE}\n"
                 f"  FIELDKIT OS v1.0  //  fieldkit.db"
             )
 
@@ -453,6 +391,8 @@ class FieldKit(App):
             self.query_one("#mode_label", Label).update(
                 f" FIELDKIT OS v1.0 -- {MODES[self.current_mode]} ")
             self.refresh_ui()
+        elif event.key == "m":
+            self.open_map()
 
 if __name__ == "__main__":
     app = FieldKit()
