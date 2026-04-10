@@ -62,6 +62,18 @@ Screen {
     color: #00ff41;
     text-style: bold;
 }
+.alert_high {
+    color: #ff0000;
+    text-style: bold;
+}
+.alert_med {
+    color: #ffaa00;
+    text-style: bold;
+}
+.alert_open {
+    color: #ff4444;
+    text-style: bold;
+}
 """
 
 MODES = {1:"RECON",2:"SDR",3:"MESH",4:"PENTEST",5:"AIRSPACE",6:"SYSTEM"}
@@ -423,7 +435,7 @@ class FieldKit(App):
             id="topbar"
         )
         yield Container(
-            Static("", id="panel_content"),
+            Static("", id="panel_content", markup=True),
             id="main_panel"
         )
         yield Horizontal(
@@ -463,8 +475,8 @@ class FieldKit(App):
         d = self.data
         now = datetime.now().strftime("%H:%M:%S")
         gps_s = "GPS:LOCK" if d.gps.fix=="3D" else "GPS:ACQ"
-        drone_alert = " !!DRONE!!" if any(dr["threat"] in ["MEDIUM","HIGH"] for dr in d.drone.drones) else ""
-        open_alert = " !!OPEN!!" if any(n["enc"]=="OPEN" for n in d.wifi.networks) else ""
+        drone_alert = " [bold red blink]!!DRONE!![/bold red blink]" if any(dr["threat"] in ["MEDIUM","HIGH"] for dr in d.drone.drones) else ""
+        open_alert = " [bold red]!!OPEN!![/bold red]" if any(n["enc"]=="OPEN" for n in d.wifi.networks) else ""
         map_s = " [M:ON]" if self.map_open else " [M:MAP]"
         self.query_one("#status_bar", Label).update(
             f"{gps_s}  SDR:ON  BAT:{d.system.battery:.0f}%  {now}{drone_alert}{open_alert}{map_s} ")
@@ -480,9 +492,9 @@ class FieldKit(App):
             high_drones = [dr for dr in d.drone.drones if dr["threat"]=="HIGH"]
             alerts = ""
             if open_nets:
-                alerts += f"\n  !! {len(open_nets)} OPEN NETWORK(S) DETECTED !!"
+                alerts += f"\n  [bold red blink]!! {len(open_nets)} OPEN NETWORK(S) DETECTED !![/bold red blink]"
             if high_drones:
-                alerts += f"\n  !! HIGH THREAT DRONE -- {high_drones[-1]['model']} !!"
+                alerts += f"\n  [bold red blink]!! HIGH THREAT DRONE -- {high_drones[-1]['model']} !![/bold red blink]"
             wifi_spark = sparkline([n["signal"] for n in d.wifi.networks], 30)
             overview_vals = [len(d.drone.drones), len(d.sdr.aircraft), len(d.sdr.hits), len(d.lora.nodes)]
             overview_labs = ["DRONE", "AC", "RF", "LORA"]
@@ -505,8 +517,24 @@ class FieldKit(App):
                 f"  {'─'*W}\n"
                 f"{vbar_chart(overview_vals, overview_labs, height=6, width=8)}\n"
                 f"  {'═'*W}\n"
-                f"  STATUS  ALL SYSTEMS NOMINAL{alerts}\n"
-                f"  press M for live satellite map"
+                f"  STATUS  [bold green]ALL SYSTEMS NOMINAL[/bold green]{alerts}\n"
+                f"  press M for live satellite map\n"
+                f"  {chr(10033)*W}\n"
+                f"  LIVE SIGNAL SPARKLINES\n"
+                f"  {chr(9472)*W}\n"
+                f"  RF SIG   {sparkline([h['signal'] for h in d.sdr.hits], W-10) if d.sdr.hits else chr(9617)*(W-10)}\n"
+                f"  WIFI SIG {sparkline([n['signal'] for n in d.wifi.networks], W-10) if d.wifi.networks else chr(9617)*(W-10)}\n"
+                f"  LORA SIG {sparkline([m['rssi'] for m in d.lora.messages], W-10) if d.lora.messages else chr(9617)*(W-10)}\n"
+                f"  {chr(10033)*W}\n"
+                f"  RECENT AIRCRAFT\n"
+                f"  {chr(9472)*W}\n"
+                + "".join([f"  ✈ {a['callsign']:<10} {hbar(a['alt'],0,40000,30,'ft','ALT')}  {a['speed']}kts  {a['distance']}km\n" for a in d.sdr.aircraft[-4:]]) +
+                f"  {chr(10033)*W}\n"
+                f"  RECENT DRONES\n"
+                f"  {chr(9472)*W}\n"
+                + "".join([f"  {'!!' if dr['threat']=='HIGH' else '▲' if dr['threat']=='MEDIUM' else '◆'} {dr['id']:<10} {dr['model']:<18} {dr['alt']:.0f}m  {dr['distance']:.0f}m  {dr['method']}\n" for dr in d.drone.drones[-3:]]) +
+                (f"  no drones\n" if not d.drone.drones else "") +
+                f"  {chr(10033)*W}"
             )
 
         elif m == 2:
