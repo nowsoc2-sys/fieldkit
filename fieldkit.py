@@ -138,70 +138,186 @@ def threat_ring(drones):
     threat_bar = hbar(pct_high, 0, 100, 20, "%", "THREAT")
     return ring + "\n  " + threat_bar
 
-def wifi_chart(networks, selected=0):
+def wifi_chart(networks, selected=0, max_visible=4):
     if not networks:
         return "  no networks\n"
     lines = []
-    lines.append("  SIGNAL STRENGTH BY NETWORK")
+    total = len(networks)
+    start = max(0, selected - max_visible + 1)
+    end = min(total, start + max_visible)
+    if end - start < max_visible:
+        start = max(0, end - max_visible)
+    lines.append("  SIGNAL STRENGTH  (" + str(total) + " networks  showing " + str(start+1) + "-" + str(end) + "  UP/DOWN to scroll)")
     lines.append("")
-    for i, n in enumerate(networks):
+    for i in range(start, end):
+        n = networks[i]
         sig = n["signal"]
         pct = min(1.0, max(0.0, (sig+100)/70))
-        width = 32
-        f = int(pct*width)
-        fill = "█"*f if n["enc"]=="OPEN" else "▓"*f
-        bar = f"[{fill}{'░'*(width-f)}]"
+        w = 32
+        f = int(pct*w)
+        fill = chr(9608)*f if n["enc"]=="OPEN" else chr(9619)*f
+        bar = "[" + fill + chr(9617)*(w-f) + "]"
         flag = " !! OPEN !!" if n["enc"]=="OPEN" else ""
         cursor = ">" if i == selected else " "
-        lines.append(f"  {cursor} {n['ssid'][:20]:<20} {bar} {sig}dBm{flag}")
-        lines.append(f"      {n['enc']:<5} ch{n['ch']:<3} {n['bssid']}")
+        lines.append("  " + cursor + " " + n["ssid"][:20].ljust(20) + " " + bar + " " + str(sig) + "dBm" + flag)
+        lines.append("      " + n["enc"].ljust(5) + " ch" + str(n["ch"]).ljust(3) + " " + n["bssid"])
         lines.append("")
+    if total > max_visible:
+        above = "scroll up" if start > 0 else ""
+        below = "more networks below" if end < total else ""
+        lines.append("  " + above.ljust(20) + "  " + below)
     return "\n".join(lines)
 
 def system_chart(d):
+    import sqlite3
+    import os
+    import subprocess
+
     cpu = d.system.cpu
     ram_pct = (d.system.ram_used/d.system.ram_total)*100
     temp = d.system.temp
     bat = d.system.battery
-    up = f"{d.system.uptime//3600:02d}:{(d.system.uptime%3600)//60:02d}:{d.system.uptime%60:02d}"
+    up = str(d.system.uptime//3600).zfill(2) + ":" + str((d.system.uptime%3600)//60).zfill(2) + ":" + str(d.system.uptime%60).zfill(2)
+
+    total_aircraft = 0
+    total_drones = 0
+    total_wifi = 0
+    total_rf = 0
+    total_gps = 0
+    closest_drone = "N/A"
+    strongest_signal = "N/A"
+    top_aircraft = "N/A"
+    try:
+        db = os.path.expanduser("~/fieldkit.db")
+        conn = sqlite3.connect(db)
+        total_aircraft = conn.execute("SELECT COUNT(*) FROM aircraft_log").fetchone()[0]
+        total_drones = conn.execute("SELECT COUNT(*) FROM drone_log").fetchone()[0]
+        total_wifi = conn.execute("SELECT COUNT(*) FROM wifi_log").fetchone()[0]
+        total_rf = conn.execute("SELECT COUNT(*) FROM sdr_log").fetchone()[0]
+        total_gps = conn.execute("SELECT COUNT(*) FROM gps_log").fetchone()[0]
+        r = conn.execute("SELECT drone_id, MIN(distance) FROM drone_log WHERE distance > 0").fetchone()
+        if r and r[1]:
+            closest_drone = str(r[0]) + " @ " + str(round(r[1],0)) + "m"
+        r = conn.execute("SELECT callsign, COUNT(*) as c FROM aircraft_log GROUP BY callsign ORDER BY c DESC LIMIT 1").fetchone()
+        if r:
+            top_aircraft = str(r[0]) + " (" + str(r[1]) + " hits)"
+        r = conn.execute("SELECT MAX(signal_db) FROM sdr_log").fetchone()
+        if r and r[0]:
+            strongest_signal = str(round(r[0],1)) + " dBm"
+        conn.close()
+    except:
+        pass
+
+    gps_score = 25 if d.gps.fix == "3D" else 10
+    bat_score = int((bat/100)*25)
+    sdr_score = 25 if d.system.sdr_on else 0
+    modules_score = 0
+    if d.system.gps_on: modules_score += 8
+    if d.system.lora_on: modules_score += 8
+    if d.system.sdr_on: modules_score += 9
+    readiness = gps_score + bat_score + sdr_score + modules_score
+    readiness = min(100, readiness)
+
+    if readiness >= 80:
+        ready_label = "FIELD READY"
+        ready_fill = chr(9608)
+    elif readiness >= 50:
+        ready_label = "PARTIAL"
+        ready_fill = chr(9619)
+    else:
+        ready_label = "NOT READY"
+        ready_fill = chr(9617)
+
+    r_width = 40
+    r_filled = int((readiness/100)*r_width)
+    ready_bar = "[" + ready_fill*r_filled + chr(9617)*(r_width-r_filled) + "]"
+
+    processes = [
+        ("dump1090", "dump1090"),
+        ("rtl_433", "rtl_433"),
+        ("kismet", "kismet"),
+        ("gpsd", "gpsd"),
+        ("meshtastic", "meshtastic"),
+    ]
+    proc_status = []
+    for name, proc in processes:
+        try:
+            r = subprocess.run(["pgrep", "-x", proc],
+                capture_output=True, timeout=1)
+            running = r.returncode == 0
+        except:
+            running = False
+        dot = "[ON] " if running else "[OFF]"
+        proc_status.append((name, dot))
+
     lines = []
-    lines.append(f"  {'═'*W}")
-    lines.append(f"  SYSTEM TELEMETRY  //  UPTIME: {up}")
-    lines.append(f"  {'─'*W}")
-    lines.append(f"  {hbar(cpu, 0, 100, 40, '%', 'CPU   ')}")
-    lines.append(f"  {hbar(ram_pct, 0, 100, 40, '%', 'RAM   ')}  {d.system.ram_used:.1f}/{d.system.ram_total:.0f}GB")
-    lines.append(f"  {hbar(temp, 20, 90, 40, 'c', 'TEMP  ')}")
-    lines.append(f"  {hbar(bat, 0, 100, 40, '%', 'BAT   ')}")
-    lines.append(f"  {'═'*W}")
-    lines.append(f"  TREND CHART")
-    lines.append(f"  {'─'*W}")
-    height = 6
-    metrics = [("CPU",cpu,0,100),("RAM",ram_pct,0,100),("TEMP",temp,20,90),("BAT",bat,0,100)]
+    lines.append("  " + "="*76)
+    lines.append("  SYSTEM TELEMETRY  //  UPTIME: " + up)
+    lines.append("  " + "-"*76)
+    lines.append("  " + hbar(cpu, 0, 100, 45, "%", "CPU   "))
+    lines.append("  " + hbar(ram_pct, 0, 100, 45, "%", "RAM   ") + "  " + str(round(d.system.ram_used,1)) + "/" + str(int(d.system.ram_total)) + "GB")
+    lines.append("  " + hbar(temp, 20, 90, 45, "c", "TEMP  "))
+    lines.append("  " + hbar(bat, 0, 100, 45, "%", "BAT   "))
+    lines.append("  " + "="*76)
+    lines.append("  FIELD READINESS  " + str(readiness) + "/100  --  " + ready_label)
+    lines.append("  " + ready_bar + "  " + ready_label)
+    lines.append("  GPS:" + str(gps_score) + "/25  BAT:" + str(bat_score) + "/25  SDR:" + str(sdr_score) + "/25  MODULES:" + str(modules_score) + "/25")
+    lines.append("  " + "="*76)
+    lines.append("  TREND CHART")
+    lines.append("  " + "-"*76)
+    height = 8
+    metrics = [
+        ("CPU%", cpu, 0, 100),
+        ("RAM%", ram_pct, 0, 100),
+        ("TEMP", temp, 20, 90),
+        ("BAT%", bat, 0, 100),
+    ]
     col_w = 12
     for row in range(height, -1, -1):
-        line = "  "
+        y_val = int((row/height)*100)
+        line = "  " + str(y_val).rjust(3) + " |"
         for label, val, lo, hi in metrics:
             pct = min(1.0, max(0.0, (val-lo)/(hi-lo)))
             h = int(pct*height)
             if row == 0:
-                line += f"{'─'*col_w}  "
+                line += "-"*col_w + "+"
             elif row <= h:
-                line += f"{'█'*col_w}  " if h > height*0.8 else f"{'▓'*col_w}  "
+                if pct > 0.8:
+                    line += chr(9608)*col_w + "|"
+                elif pct > 0.5:
+                    line += chr(9619)*col_w + "|"
+                elif pct > 0.3:
+                    line += chr(9618)*col_w + "|"
+                else:
+                    line += chr(9617)*col_w + "|"
             else:
-                line += f"{'░'*col_w}  "
+                line += " "*col_w + "|"
         lines.append(line)
-    val_line = "  "
+    val_line = "       "
     for label, val, lo, hi in metrics:
-        val_line += f"{label}:{val:.0f}{'%' if label != 'TEMP' else 'c'}  ".ljust(col_w+2)
+        val_line += (label + ":" + str(round(val,1))).ljust(col_w+1)
     lines.append(val_line)
-    lines.append(f"  {'═'*W}")
+    lines.append("  " + "="*76)
+    lines.append("  ALL TIME DETECTION STATS  (from fieldkit.db)")
+    lines.append("  " + "-"*76)
+    stats_vals = [total_aircraft, total_drones, total_wifi, total_rf, total_gps]
+    stats_labs = ["AC", "DRONE", "WIFI", "RF", "GPS"]
+    lines.append(vbar_chart(stats_vals, stats_labs, height=5, width=6))
+    lines.append("  AIRCRAFT:" + str(total_aircraft) + "  DRONES:" + str(total_drones) + "  WIFI:" + str(total_wifi) + "  RF:" + str(total_rf) + "  GPS FIXES:" + str(total_gps))
+    lines.append("  CLOSEST DRONE: " + closest_drone + "  TOP AIRCRAFT: " + top_aircraft)
+    lines.append("  STRONGEST SIGNAL: " + strongest_signal)
+    lines.append("  " + "="*76)
+    lines.append("  PROCESS STATUS")
+    lines.append("  " + "-"*76)
+    proc_line = "  "
+    for name, dot in proc_status:
+        proc_line += dot + " " + name.ljust(12) + "  "
+    lines.append(proc_line)
+    lines.append("  " + "="*76)
     sdr = "[LIVE]" if d.system.sdr_on else "[SIM] "
     gps = "[LIVE]" if d.system.gps_on else "[SIM] "
     lora = "[LIVE]" if d.system.lora_on else "[SIM] "
-    lines.append(f"  SDR:{sdr}  GPS:{gps}  LORA:{lora}")
-    lines.append(f"  {'─'*W}")
-    lines.append(f"  dump1090  rtl_433  DroneSecurity  Kismet  Meshtastic  gpsd")
-    lines.append(f"  fieldkit.db  //  FIELDKIT OS v1.0  //  NWS-C")
+    lines.append("  SDR:" + sdr + "  GPS:" + gps + "  LORA:" + lora + "  //  FIELDKIT OS v1.0  //  NWS-C")
     return "\n".join(lines)
 
 def airspace_chart(d, selected=0, action_result=""):
