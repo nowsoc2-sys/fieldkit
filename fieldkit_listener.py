@@ -57,6 +57,7 @@ def log_hit(hit_type, source, freq, signal, raw=""):
 
 def listen_rtl433():
     print("[rtl_433] starting listener...")
+    last_error = None
     while True:
         try:
             proc = subprocess.Popen(
@@ -67,6 +68,8 @@ def listen_rtl433():
                  "-M", "time:iso"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL)
+            last_error = None
+            print("[rtl_433] hardware found -- listening")
             for line in proc.stdout:
                 try:
                     hit = json.loads(line.decode())
@@ -81,18 +84,24 @@ def listen_rtl433():
                 except:
                     pass
         except Exception as e:
-            print(f"[rtl_433] error: {e}")
-            time.sleep(5)
+            err = str(e)
+            if err != last_error:
+                print(f"[rtl_433] waiting for hardware -- {err}")
+                last_error = err
+            time.sleep(10)
 
 def listen_dump1090():
     print("[dump1090] starting ADS-B listener...")
     import socket
+    last_error = None
     while True:
         try:
             sock = socket.socket()
             sock.connect(("localhost", 30003))
             sock.settimeout(10)
             buf = ""
+            last_error = None
+            print("[dump1090] connected -- listening for aircraft")
             while True:
                 data = sock.recv(4096).decode("utf-8", errors="ignore")
                 if not data:
@@ -117,17 +126,23 @@ def listen_dump1090():
                             )
                             print(f"[dump1090] {callsign} ALT:{alt}ft")
         except Exception as e:
-            print(f"[dump1090] error: {e}")
-            time.sleep(5)
+            err = str(e)
+            if err != last_error:
+                print(f"[dump1090] waiting for hardware -- {err}")
+                last_error = err
+            time.sleep(10)
 
 def listen_meshtastic():
     print("[meshtastic] starting LoRa listener...")
+    last_error = None
     while True:
         try:
             proc = subprocess.Popen(
                 ["meshtastic", "--listen"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL)
+            last_error = None
+            print("[meshtastic] connected -- listening on 915MHz")
             for line in proc.stdout:
                 try:
                     text = line.decode().strip()
@@ -143,8 +158,11 @@ def listen_meshtastic():
                 except:
                     pass
         except Exception as e:
-            print(f"[meshtastic] error: {e}")
-            time.sleep(5)
+            err = str(e)
+            if err != last_error:
+                print(f"[meshtastic] waiting for hardware -- {err}")
+                last_error = err
+            time.sleep(10)
 
 def listen_wifi():
     print("[kismet] starting WiFi listener...")
