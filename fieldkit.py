@@ -333,6 +333,16 @@ class FieldKit(App):
     def __init__(self):
         super().__init__()
         self.data = FieldKitData()
+        self.action_result = ""
+        self.selected_network = 0
+        self.selected_drone = 0
+        from fieldkit_actions import (
+            PENTEST, SDR, AIRSPACE, MESH, check_action_hardware)
+        self.pentest = PENTEST
+        self.sdr_actions = SDR
+        self.airspace = AIRSPACE
+        self.mesh = MESH
+        check_action_hardware()
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
@@ -532,6 +542,7 @@ class FieldKit(App):
             return system_chart(d)
 
     def on_key(self, event: events.Key) -> None:
+        d = self.data
         key_map = {"1":1,"2":2,"3":3,"4":4,"5":5,"6":6}
         if event.key in key_map:
             old = self.current_mode
@@ -540,10 +551,76 @@ class FieldKit(App):
             self.query_one(f"#nav{self.current_mode}", Label).add_class("active")
             self.query_one("#mode_label", Label).update(
                 f" FIELDKIT OS v1.0 -- {MODES[self.current_mode]} ")
+            self.action_result = ""
             self.refresh_ui()
+        elif event.key == "m":
+            self.open_map()
+        elif self.current_mode == 4:
+            nets = d.wifi.networks
+            if event.key == "a" and nets:
+                net = nets[self.selected_network % len(nets)]
+                ok, msg = self.pentest.capture_handshake(
+                    net["bssid"], net["ch"], net["ssid"])
+                self.action_result = msg
+            elif event.key == "d" and nets:
+                net = nets[self.selected_network % len(nets)]
+                ok, msg = self.pentest.deauth_attack(net["bssid"])
+                self.action_result = msg
+            elif event.key == "s" and nets:
+                ok, msg = self.pentest.nmap_scan("192.168.1.0/24")
+                self.action_result = msg
+            elif event.key == "c":
+                ok, msg = self.pentest.packet_capture()
+                self.action_result = msg
+            elif event.key == "r" and nets:
+                net = nets[self.selected_network % len(nets)]
+                ok, msg = self.pentest.reaver_attack(net["bssid"])
+                self.action_result = msg
+            elif event.key == "up":
+                self.selected_network = max(0, self.selected_network - 1)
+            elif event.key == "down":
+                self.selected_network = min(
+                    len(nets)-1, self.selected_network + 1)
+        elif self.current_mode == 2:
+            if event.key == "t":
+                ok, msg = self.sdr_actions.tune_and_record(
+                    d.sdr.frequency)
+                self.action_result = msg
+            elif event.key == "f":
+                ok, msg = self.sdr_actions.decode_fm(d.sdr.frequency)
+                self.action_result = msg
+            elif event.key == "w":
+                ok, msg = self.sdr_actions.sweep_spectrum()
+                self.action_result = msg
+        elif self.current_mode == 5:
+            drones = d.drone.drones
+            if event.key == "t" and drones:
+                dr = drones[self.selected_drone % len(drones)]
+                ok, msg = self.airspace.tag_drone(dr["id"])
+                self.action_result = msg
+            elif event.key == "e":
+                ok, msg = self.airspace.export_report(
+                    d.gps.lat, d.gps.lon)
+                self.action_result = msg
+            elif event.key == "up":
+                self.selected_drone = max(0, self.selected_drone - 1)
+            elif event.key == "down":
+                self.selected_drone = min(
+                    len(drones)-1, self.selected_drone + 1)
+        elif self.current_mode == 3:
+            if event.key == "p":
+                nodes = d.lora.nodes
+                if nodes:
+                    ok, msg = self.mesh.ping_node(nodes[0]["id"])
+                    self.action_result = msg
+            elif event.key == "i":
+                ok, msg = self.mesh.get_node_info()
+                self.action_result = msg
+        self.refresh_ui()
         elif event.key == "m":
             self.open_map()
 
 if __name__ == "__main__":
     app = FieldKit()
     app.run()
+
