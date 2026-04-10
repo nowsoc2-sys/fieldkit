@@ -44,3 +44,4 @@ Raspberry Pi CM5 16GB
 HackerGadgets AIO V2 RTL-SDR/LoRa/GPS
 FENVI AX1800 WiFi dongle
 Samsung 30Q 18650 x2
+# FIELDKIT
